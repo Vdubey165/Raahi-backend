@@ -55,5 +55,5 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
-    console.log(`SMS endpoints available at: https://raahi-backend.vercel.app//api/sms/`);
+    console.log(`SMS endpoints available at: https://raahi-backend.vercel.app/api/sms/`);
 });
