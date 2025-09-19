@@ -27,7 +27,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "https://raahi-frontend.vercel.app/enhanced-tracker.html",
+    origin: "https://raahi-frontend.vercel.app",
     methods: ["GET", "POST"],
     credentials: true
   }
