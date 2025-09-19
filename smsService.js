@@ -4,26 +4,80 @@ const twilio = require('twilio');
 const express = require('express');
 const router = express.Router();
 
-console.log('Loading SMS Service environment variables...');
-console.log('TWILIO_ACCOUNT_SID:', process.env.TWILIO_ACCOUNT_SID);
-console.log('TWILIO_AUTH_TOKEN:', process.env.TWILIO_AUTH_TOKEN ? 'Found' : 'Not found');
-console.log('TWILIO_PHONE_NUMBER:', process.env.TWILIO_PHONE_NUMBER);
+// Enhanced logging for environment variables
+console.log('=== SMS SERVICE ENVIRONMENT DEBUG ===');
+console.log('NODE_ENV:', process.env.NODE_ENV);
+console.log('TWILIO_ACCOUNT_SID:', process.env.TWILIO_ACCOUNT_SID ? `${process.env.TWILIO_ACCOUNT_SID.substring(0, 10)}...` : 'NOT FOUND');
+console.log('TWILIO_AUTH_TOKEN:', process.env.TWILIO_AUTH_TOKEN ? `${process.env.TWILIO_AUTH_TOKEN.substring(0, 10)}...` : 'NOT FOUND');
+console.log('TWILIO_PHONE_NUMBER:', process.env.TWILIO_PHONE_NUMBER || 'NOT FOUND');
+console.log('All env keys:', Object.keys(process.env).filter(key => key.startsWith('TWILIO')));
+console.log('=====================================');
 
-// Initialize Twilio client
+// Initialize Twilio client with error handling
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
-const client = twilio(accountSid, authToken);
+
+// Validate credentials before creating client
+if (!accountSid || !authToken || !twilioPhoneNumber) {
+    console.error('❌ CRITICAL: Missing Twilio credentials!');
+    console.error('AccountSid:', !!accountSid);
+    console.error('AuthToken:', !!authToken);
+    console.error('PhoneNumber:', !!twilioPhoneNumber);
+}
+
+let client;
+try {
+    client = twilio(accountSid, authToken);
+    console.log('✅ Twilio client initialized successfully');
+} catch (error) {
+    console.error('❌ Failed to initialize Twilio client:', error.message);
+}
 
 // Store user SMS subscriptions (in production, use a database)
 const smsSubscriptions = new Map();
 
 // SMS Service Class
 class SMSService {
+    // Test Twilio connection
+    static async testTwilioConnection() {
+        try {
+            if (!client) {
+                throw new Error('Twilio client not initialized');
+            }
+            
+            // Try to fetch account details
+            const account = await client.api.accounts(accountSid).fetch();
+            console.log('✅ Twilio connection test successful');
+            console.log('Account status:', account.status);
+            return { success: true, status: account.status };
+        } catch (error) {
+            console.error('❌ Twilio connection test failed:', error.message);
+            console.error('Error code:', error.code);
+            console.error('Error details:', error);
+            return { success: false, error: error.message, code: error.code };
+        }
+    }
+
     // Subscribe user for SMS updates
     static async subscribeUser(phoneNumber, preferences = {}) {
         try {
-            console.log('Subscribing user:', phoneNumber);
+            console.log('=== SUBSCRIBE USER DEBUG ===');
+            console.log('Phone number:', phoneNumber);
+            console.log('Client available:', !!client);
+            console.log('AccountSid available:', !!accountSid);
+            console.log('AuthToken available:', !!authToken);
+            console.log('TwilioPhone available:', !!twilioPhoneNumber);
+            
+            // Test Twilio connection first
+            const connectionTest = await this.testTwilioConnection();
+            if (!connectionTest.success) {
+                console.error('Twilio connection failed:', connectionTest.error);
+                return {
+                    success: false,
+                    message: `Twilio connection failed: ${connectionTest.error}`
+                };
+            }
             
             // Validate phone number format
             if (!this.isValidPhoneNumber(phoneNumber)) {
@@ -45,8 +99,11 @@ class SMSService {
                 lastMessageSent: null
             });
 
+            console.log('User subscription stored, attempting to send welcome SMS...');
+
             // Send welcome SMS
             const welcomeResult = await this.sendWelcomeSMS(phoneNumber);
+            console.log('Welcome SMS result:', welcomeResult);
             
             if (welcomeResult.success) {
                 return {
@@ -85,20 +142,34 @@ Stay connected even in low network areas!`;
         return await this.sendSMS(phoneNumber, message);
     }
 
-    // Send SMS using Twilio
+    // Send SMS using Twilio with enhanced debugging
     static async sendSMS(phoneNumber, message) {
         try {
-            console.log('Attempting to send SMS to:', phoneNumber);
-            console.log('From number:', twilioPhoneNumber);
-            console.log('Message preview:', message.substring(0, 50) + '...');
+            console.log('=== SEND SMS DEBUG ===');
+            console.log('To:', phoneNumber);
+            console.log('From:', twilioPhoneNumber);
+            console.log('Message length:', message.length);
+            console.log('Client initialized:', !!client);
             
+            if (!client) {
+                throw new Error('Twilio client not initialized');
+            }
+            
+            if (!twilioPhoneNumber) {
+                throw new Error('Twilio phone number not configured');
+            }
+            
+            console.log('Calling Twilio API...');
             const result = await client.messages.create({
                 body: message,
                 from: twilioPhoneNumber,
                 to: phoneNumber
             });
 
-            console.log(`SMS sent successfully. SID: ${result.sid}`);
+            console.log(`✅ SMS sent successfully!`);
+            console.log('Message SID:', result.sid);
+            console.log('Status:', result.status);
+            console.log('Price:', result.price);
             
             // Update last message sent time
             const subscription = smsSubscriptions.get(phoneNumber);
@@ -113,12 +184,18 @@ Stay connected even in low network areas!`;
                 status: result.status
             };
         } catch (error) {
-            console.error('SMS sending error:', error);
-            console.error('Error code:', error.code);
+            console.error('❌ SMS sending failed:');
             console.error('Error message:', error.message);
+            console.error('Error code:', error.code);
+            console.error('Status:', error.status);
+            console.error('More info:', error.moreInfo);
+            console.error('Full error:', error);
+            
             return {
                 success: false,
-                error: error.message
+                error: error.message,
+                code: error.code,
+                status: error.status
             };
         }
     }
@@ -134,110 +211,6 @@ ETA: ${eta} minutes
 Current time: ${new Date().toLocaleTimeString()}
 
 Reply "STATUS ${busNumber}" for more details.`;
-
-        return await this.sendSMS(phoneNumber, message);
-    }
-
-    // Send route status via SMS
-    static async sendRouteStatus(phoneNumber, routeName, buses) {
-        let message = `📍 Route Status - ${routeName}\n\n`;
-        
-        buses.forEach(bus => {
-            message += `Bus ${bus.busNumber}: ${bus.status.toUpperCase()}\n`;
-            message += `Occupancy: ${bus.currentOccupancy}/${bus.capacity}\n`;
-            message += `Speed: ${bus.speed} km/h\n\n`;
-        });
-
-        message += `Time: ${new Date().toLocaleTimeString()}\nReply "ETA [Bus Number]" for arrival time.`;
-
-        return await this.sendSMS(phoneNumber, message);
-    }
-
-    // Handle incoming SMS commands
-    static async handleIncomingSMS(from, body) {
-        console.log(`Processing SMS from ${from}: ${body}`);
-        
-        const command = body.trim().toUpperCase();
-        const subscription = smsSubscriptions.get(from);
-
-        if (!subscription || !subscription.isActive) {
-            console.log('User not subscribed:', from);
-            return await this.sendSMS(from, "You're not subscribed to SMS updates. Visit our app to subscribe first.");
-        }
-
-        try {
-            if (command === 'STOP') {
-                return await this.unsubscribeUser(from);
-            } else if (command === 'HELP') {
-                return await this.sendHelpSMS(from);
-            } else if (command === 'START') {
-                return await this.sendSMS(from, "You're already subscribed! Reply 'HELP' for commands.");
-            } else if (command.startsWith('ETA ')) {
-                const busNumber = command.replace('ETA ', '');
-                return await this.handleETARequest(from, busNumber);
-            } else if (command.startsWith('STATUS ')) {
-                const route = command.replace('STATUS ', '');
-                return await this.handleStatusRequest(from, route);
-            } else {
-                return await this.sendSMS(from, "Unknown command. Reply 'HELP' for available commands.");
-            }
-        } catch (error) {
-            console.error('Error handling SMS command:', error);
-            return await this.sendSMS(from, "Sorry, there was an error processing your request. Please try again.");
-        }
-    }
-
-    // Send help SMS
-    static async sendHelpSMS(phoneNumber) {
-        const message = `📱 Raahi SMS Commands:
-
-ETA [Bus Number] - Get arrival time
-STATUS [Route Name] - Get route status
-STOP - Unsubscribe from SMS
-HELP - Show this help
-
-Examples:
-"ETA DL-1234"
-"STATUS City Center"
-
-24/7 SMS support for low network areas.`;
-
-        return await this.sendSMS(phoneNumber, message);
-    }
-
-    // Handle ETA request
-    static async handleETARequest(phoneNumber, busNumber) {
-        console.log(`ETA requested for bus ${busNumber} by ${phoneNumber}`);
-        // This integrates with your existing bus tracking logic
-        // For now, returning a sample response
-        const eta = Math.floor(Math.random() * 15) + 1; // Sample ETA
-        return await this.sendBusETA(phoneNumber, busNumber, eta, "Sample Route");
-    }
-
-    // Handle status request  
-    static async handleStatusRequest(phoneNumber, routeName) {
-        console.log(`Status requested for route ${routeName} by ${phoneNumber}`);
-        // Sample buses data - replace with actual data from your database
-        const sampleBuses = [
-            { busNumber: 'DL-1234', status: 'active', currentOccupancy: 15, capacity: 40, speed: 25 },
-            { busNumber: 'DL-5678', status: 'idle', currentOccupancy: 8, capacity: 45, speed: 0 }
-        ];
-        return await this.sendRouteStatus(phoneNumber, routeName, sampleBuses);
-    }
-
-    // Unsubscribe user
-    static async unsubscribeUser(phoneNumber) {
-        const subscription = smsSubscriptions.get(phoneNumber);
-        if (subscription) {
-            subscription.isActive = false;
-            smsSubscriptions.set(phoneNumber, subscription);
-        }
-
-        const message = `You've been unsubscribed from Raahi SMS updates.
-
-To resubscribe, visit our app anytime.
-
-Thank you for using Raahi!`;
 
         return await this.sendSMS(phoneNumber, message);
     }
@@ -258,36 +231,40 @@ Thank you for using Raahi!`;
         const subscription = smsSubscriptions.get(phoneNumber);
         return subscription && subscription.isActive;
     }
-
-    // Get all active subscriptions
-    static getActiveSubscriptions() {
-        return Array.from(smsSubscriptions.entries())
-            .filter(([phone, sub]) => sub.isActive)
-            .map(([phone, sub]) => ({ phone, ...sub }));
-    }
 }
 
 // API Routes
 console.log('Setting up SMS API routes...');
 
-// Test route
-router.get('/test', (req, res) => {
+// Enhanced test route
+router.get('/test', async (req, res) => {
+    const connectionTest = await SMSService.testTwilioConnection();
+    
     res.json({ 
         message: 'SMS service is working',
         timestamp: new Date().toISOString(),
-        twilioConfigured: !!(accountSid && authToken && twilioPhoneNumber)
+        environment: process.env.NODE_ENV || 'development',
+        twilioConfigured: !!(accountSid && authToken && twilioPhoneNumber),
+        connectionTest: connectionTest,
+        credentials: {
+            accountSid: !!accountSid,
+            authToken: !!authToken,
+            phoneNumber: !!twilioPhoneNumber
+        }
     });
 });
 
 // Subscribe to SMS notifications
 router.post('/subscribe', async (req, res) => {
     console.log('=== SMS SUBSCRIBE ENDPOINT HIT ===');
+    console.log('Timestamp:', new Date().toISOString());
     console.log('Request body:', req.body);
+    console.log('Headers:', req.headers);
     
     const { phoneNumber, preferences } = req.body;
 
     if (!phoneNumber) {
-        console.log('No phone number provided');
+        console.log('❌ No phone number provided');
         return res.status(400).json({
             success: false,
             message: 'Phone number is required'
@@ -296,32 +273,9 @@ router.post('/subscribe', async (req, res) => {
 
     console.log('Processing subscription for:', phoneNumber);
     const result = await SMSService.subscribeUser(phoneNumber, preferences);
-    console.log('Subscription result:', result);
+    console.log('Final subscription result:', result);
     
     res.json(result);
-});
-
-// Handle incoming webhooks from Twilio
-router.post('/webhook', async (req, res) => {
-    console.log('=== INCOMING SMS WEBHOOK RECEIVED ===');
-    console.log('Timestamp:', new Date().toISOString());
-    console.log('From:', req.body.From);
-    console.log('Body:', req.body.Body);
-    console.log('Full Request Body:', JSON.stringify(req.body, null, 2));
-    console.log('=====================================');
-    
-    const { From, Body } = req.body;
-    
-    try {
-        await SMSService.handleIncomingSMS(From, Body);
-        console.log('SMS command processed successfully');
-    } catch (error) {
-        console.error('Error handling incoming SMS:', error);
-    }
-    
-    // Respond with empty TwiML to acknowledge
-    res.set('Content-Type', 'text/xml');
-    res.send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
 });
 
 // Send ETA to specific user
@@ -344,22 +298,6 @@ router.post('/send-eta', async (req, res) => {
     res.json(result);
 });
 
-// Send emergency alert
-router.post('/emergency-alert', async (req, res) => {
-    const { phoneNumber, message, busNumber } = req.body;
-    
-    const result = await SMSService.sendEmergencyAlert(phoneNumber, message, busNumber);
-    res.json(result);
-});
-
-// Unsubscribe user
-router.post('/unsubscribe', async (req, res) => {
-    const { phoneNumber } = req.body;
-    
-    const result = await SMSService.unsubscribeUser(phoneNumber);
-    res.json(result);
-});
-
-console.log('SMS Service initialized successfully');
+console.log('✅ SMS Service initialized');
 
 module.exports = { SMSService, router };
