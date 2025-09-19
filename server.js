@@ -14,7 +14,7 @@ const { router: smsRoutes } = require('./smsService');
 const app = express();
 
 app.use(cors({
-  origin: "https://raahi-frontend.vercel.app/enhanced-tracker.html",
+  origin: "https://raahi-frontend.vercel.app",
   credentials: true
 }));
 app.use(express.json());
