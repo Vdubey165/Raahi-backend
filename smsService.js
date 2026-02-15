@@ -1,61 +1,44 @@
 require('dotenv').config();
-
-const twilio = require('twilio');
 const express = require('express');
 const router = express.Router();
+const axios = require('axios');
 
-// Enhanced logging for environment variables
-console.log('=== SMS SERVICE ENVIRONMENT DEBUG ===');
-console.log('NODE_ENV:', process.env.NODE_ENV);
-console.log('TWILIO_ACCOUNT_SID:', process.env.TWILIO_ACCOUNT_SID ? `${process.env.TWILIO_ACCOUNT_SID.substring(0, 10)}...` : 'NOT FOUND');
-console.log('TWILIO_AUTH_TOKEN:', process.env.TWILIO_AUTH_TOKEN ? `${process.env.TWILIO_AUTH_TOKEN.substring(0, 10)}...` : 'NOT FOUND');
-console.log('TWILIO_PHONE_NUMBER:', process.env.TWILIO_PHONE_NUMBER || 'NOT FOUND');
-console.log('All env keys:', Object.keys(process.env).filter(key => key.startsWith('TWILIO')));
+// msg91 Configuration
+const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY;
+const MSG91_SENDER_ID = process.env.MSG91_SENDER_ID || 'RAAHIB'; // 6 chars sender ID
+const MSG91_ROUTE = process.env.MSG91_ROUTE || '4'; // 4 = Transactional
+
+console.log('=== SMS SERVICE (msg91) ENVIRONMENT DEBUG ===');
+console.log('MSG91_AUTH_KEY:', MSG91_AUTH_KEY ? `${MSG91_AUTH_KEY.substring(0, 10)}...` : 'NOT FOUND');
+console.log('MSG91_SENDER_ID:', MSG91_SENDER_ID);
 console.log('=====================================');
-
-// Initialize Twilio client with error handling
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const authToken = process.env.TWILIO_AUTH_TOKEN;
-const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
-
-// Validate credentials before creating client
-if (!accountSid || !authToken || !twilioPhoneNumber) {
-    console.error('❌ CRITICAL: Missing Twilio credentials!');
-    console.error('AccountSid:', !!accountSid);
-    console.error('AuthToken:', !!authToken);
-    console.error('PhoneNumber:', !!twilioPhoneNumber);
-}
-
-let client;
-try {
-    client = twilio(accountSid, authToken);
-    console.log('✅ Twilio client initialized successfully');
-} catch (error) {
-    console.error('❌ Failed to initialize Twilio client:', error.message);
-}
 
 // Store user SMS subscriptions (in production, use a database)
 const smsSubscriptions = new Map();
 
-// SMS Service Class
+// SMS Service Class using msg91
 class SMSService {
-    // Test Twilio connection
-    static async testTwilioConnection() {
+    // Test msg91 connection
+    static async testConnection() {
         try {
-            if (!client) {
-                throw new Error('Twilio client not initialized');
+            if (!MSG91_AUTH_KEY) {
+                throw new Error('msg91 AUTH_KEY not configured');
             }
+
+            // Test with balance check API
+            const response = await axios.get('https://api.msg91.com/api/balance.php', {
+                params: {
+                    authkey: MSG91_AUTH_KEY,
+                    type: 4 // SMS balance
+                }
+            });
             
-            // Try to fetch account details
-            const account = await client.api.accounts(accountSid).fetch();
-            console.log('✅ Twilio connection test successful');
-            console.log('Account status:', account.status);
-            return { success: true, status: account.status };
+            console.log('✅ msg91 connection test successful');
+            console.log('SMS Balance:', response.data);
+            return { success: true, balance: response.data };
         } catch (error) {
-            console.error('❌ Twilio connection test failed:', error.message);
-            console.error('Error code:', error.code);
-            console.error('Error details:', error);
-            return { success: false, error: error.message, code: error.code };
+            console.error('❌ msg91 connection test failed:', error.message);
+            return { success: false, error: error.message };
         }
     }
 
@@ -64,24 +47,19 @@ class SMSService {
         try {
             console.log('=== SUBSCRIBE USER DEBUG ===');
             console.log('Phone number:', phoneNumber);
-            console.log('Client available:', !!client);
-            console.log('AccountSid available:', !!accountSid);
-            console.log('AuthToken available:', !!authToken);
-            console.log('TwilioPhone available:', !!twilioPhoneNumber);
             
-            // Test Twilio connection first
-            const connectionTest = await this.testTwilioConnection();
+            // Test connection first
+            const connectionTest = await this.testConnection();
             if (!connectionTest.success) {
-                console.error('Twilio connection failed:', connectionTest.error);
                 return {
                     success: false,
-                    message: `Twilio connection failed: ${connectionTest.error}`
+                    message: `msg91 connection failed: ${connectionTest.error}`
                 };
             }
             
             // Validate phone number format
             if (!this.isValidPhoneNumber(phoneNumber)) {
-                throw new Error('Invalid phone number format');
+                throw new Error('Invalid phone number format. Use: +91XXXXXXXXXX');
             }
 
             // Store subscription preferences
@@ -99,7 +77,7 @@ class SMSService {
                 lastMessageSent: null
             });
 
-            console.log('User subscription stored, attempting to send welcome SMS...');
+            console.log('User subscription stored, sending welcome SMS...');
 
             // Send welcome SMS
             const welcomeResult = await this.sendWelcomeSMS(phoneNumber);
@@ -127,13 +105,13 @@ class SMSService {
 
     // Send welcome SMS
     static async sendWelcomeSMS(phoneNumber) {
-        const message = `Welcome to Raahi Bus Tracking SMS service!
+        const message = `Welcome to Raahi Bus Tracking!
 
 You'll receive bus updates via SMS when internet is slow.
 
 Commands:
 - Reply "ETA [Bus Number]" for arrival time
-- Reply "STATUS [Route]" for route status  
+- Reply "STATUS [Route]" for route status
 - Reply "STOP" to unsubscribe
 - Reply "HELP" for more commands
 
@@ -142,34 +120,43 @@ Stay connected even in low network areas!`;
         return await this.sendSMS(phoneNumber, message);
     }
 
-    // Send SMS using Twilio with enhanced debugging
+    // Send SMS using msg91
     static async sendSMS(phoneNumber, message) {
         try {
             console.log('=== SEND SMS DEBUG ===');
             console.log('To:', phoneNumber);
-            console.log('From:', twilioPhoneNumber);
             console.log('Message length:', message.length);
-            console.log('Client initialized:', !!client);
             
-            if (!client) {
-                throw new Error('Twilio client not initialized');
+            if (!MSG91_AUTH_KEY) {
+                throw new Error('msg91 AUTH_KEY not configured');
             }
-            
-            if (!twilioPhoneNumber) {
-                throw new Error('Twilio phone number not configured');
-            }
-            
-            console.log('Calling Twilio API...');
-            const result = await client.messages.create({
-                body: message,
-                from: twilioPhoneNumber,
-                to: phoneNumber
-            });
 
-            console.log(`✅ SMS sent successfully!`);
-            console.log('Message SID:', result.sid);
-            console.log('Status:', result.status);
-            console.log('Price:', result.price);
+            // Remove + from phone number for msg91
+            const cleanPhone = phoneNumber.replace('+', '');
+            
+            // msg91 API v5 - JSON format
+            const response = await axios.post(
+                'https://api.msg91.com/api/v5/flow/',
+                {
+                    template_id: process.env.MSG91_TEMPLATE_ID, // Optional: for template
+                    short_url: '0',
+                    recipients: [
+                        {
+                            mobiles: cleanPhone,
+                            var1: message // If using template
+                        }
+                    ]
+                },
+                {
+                    headers: {
+                        'authkey': MSG91_AUTH_KEY,
+                        'content-type': 'application/json'
+                    }
+                }
+            );
+
+            console.log('✅ SMS sent successfully via msg91!');
+            console.log('Response:', response.data);
             
             // Update last message sent time
             const subscription = smsSubscriptions.get(phoneNumber);
@@ -180,29 +167,54 @@ Stay connected even in low network areas!`;
 
             return {
                 success: true,
-                messageSid: result.sid,
-                status: result.status
+                messageId: response.data.request_id,
+                status: response.data.type
             };
         } catch (error) {
             console.error('❌ SMS sending failed:');
-            console.error('Error message:', error.message);
-            console.error('Error code:', error.code);
-            console.error('Status:', error.status);
-            console.error('More info:', error.moreInfo);
-            console.error('Full error:', error);
+            console.error('Error:', error.response?.data || error.message);
             
             return {
                 success: false,
-                error: error.message,
-                code: error.code,
-                status: error.status
+                error: error.response?.data?.message || error.message
+            };
+        }
+    }
+
+    // Alternative: Simple SMS without template (for testing)
+    static async sendSimpleSMS(phoneNumber, message) {
+        try {
+            const cleanPhone = phoneNumber.replace('+', '');
+            
+            const response = await axios.get('https://api.msg91.com/api/sendhttp.php', {
+                params: {
+                    authkey: MSG91_AUTH_KEY,
+                    mobiles: cleanPhone,
+                    message: message,
+                    sender: MSG91_SENDER_ID,
+                    route: MSG91_ROUTE,
+                    country: '91'
+                }
+            });
+
+            console.log('✅ Simple SMS sent:', response.data);
+            
+            return {
+                success: true,
+                response: response.data
+            };
+        } catch (error) {
+            console.error('❌ Simple SMS failed:', error.message);
+            return {
+                success: false,
+                error: error.message
             };
         }
     }
 
     // Send bus ETA via SMS
     static async sendBusETA(phoneNumber, busNumber, eta, routeName) {
-        const message = `🚌 Bus Update - Raahi
+        const message = `🚌 Raahi Bus Update
 
 Bus: ${busNumber}
 Route: ${routeName}
@@ -210,18 +222,19 @@ ETA: ${eta} minutes
 
 Current time: ${new Date().toLocaleTimeString()}
 
-Reply "STATUS ${busNumber}" for more details.`;
+Reply STATUS ${busNumber} for details`;
 
-        return await this.sendSMS(phoneNumber, message);
+        // Use simple SMS for now (easier to test)
+        return await this.sendSimpleSMS(phoneNumber, message);
     }
 
-    // Validate phone number
+    // Validate phone number (Indian format)
     static isValidPhoneNumber(phoneNumber) {
-        // Remove any spaces, dashes, or parentheses
+        // Accept formats: +919876543210 or 9876543210
         const cleaned = phoneNumber.replace(/[\s\-\(\)]/g, '');
         
-        // Check for valid international format
-        const phoneRegex = /^\+[1-9]\d{7,15}$/;
+        // Indian mobile numbers: +91 followed by 10 digits starting with 6-9
+        const phoneRegex = /^(\+91|91)?[6-9]\d{9}$/;
         
         return phoneRegex.test(cleaned);
     }
@@ -236,45 +249,34 @@ Reply "STATUS ${busNumber}" for more details.`;
 // API Routes
 console.log('Setting up SMS API routes...');
 
-// Enhanced test route
+// Test route
 router.get('/test', async (req, res) => {
-    const connectionTest = await SMSService.testTwilioConnection();
+    const connectionTest = await SMSService.testConnection();
     
     res.json({ 
-        message: 'SMS service is working',
+        message: 'msg91 SMS service is working',
         timestamp: new Date().toISOString(),
         environment: process.env.NODE_ENV || 'development',
-        twilioConfigured: !!(accountSid && authToken && twilioPhoneNumber),
-        connectionTest: connectionTest,
-        credentials: {
-            accountSid: !!accountSid,
-            authToken: !!authToken,
-            phoneNumber: !!twilioPhoneNumber
-        }
+        msg91Configured: !!MSG91_AUTH_KEY,
+        connectionTest: connectionTest
     });
 });
 
 // Subscribe to SMS notifications
 router.post('/subscribe', async (req, res) => {
     console.log('=== SMS SUBSCRIBE ENDPOINT HIT ===');
-    console.log('Timestamp:', new Date().toISOString());
     console.log('Request body:', req.body);
-    console.log('Headers:', req.headers);
     
     const { phoneNumber, preferences } = req.body;
 
     if (!phoneNumber) {
-        console.log('❌ No phone number provided');
         return res.status(400).json({
             success: false,
             message: 'Phone number is required'
         });
     }
 
-    console.log('Processing subscription for:', phoneNumber);
     const result = await SMSService.subscribeUser(phoneNumber, preferences);
-    console.log('Final subscription result:', result);
-    
     res.json(result);
 });
 
@@ -293,11 +295,9 @@ router.post('/send-eta', async (req, res) => {
     }
     
     const result = await SMSService.sendBusETA(phoneNumber, busNumber, eta, routeName);
-    console.log('Send ETA result:', result);
-    
     res.json(result);
 });
 
-console.log('✅ SMS Service initialized');
+console.log('✅ SMS Service (msg91) initialized');
 
 module.exports = { SMSService, router };
